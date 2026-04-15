@@ -1,11 +1,11 @@
 """
 LinkedIn Search MCP Server
 
-Exposes LinkedIn search capabilities (people, companies, jobs, profile lookup)
-to Claude via the Model Context Protocol (MCP).
+Uses the linkedin-api package (unofficial LinkedIn internal API) to perform
+authenticated searches for people, companies, and jobs — with full behind-login
+data access.
 
-Search is powered by SerpAPI (Google-based) and optionally Proxycurl for
-rich profile data.
+Requires LINKEDIN_EMAIL and LINKEDIN_PASSWORD in .env.
 
 Usage:
     python -m src.server
@@ -24,56 +24,32 @@ Claude Desktop config (~/.claude/claude_desktop_config.json):
 
 import json
 import os
-from typing import Optional
 
-import httpx
 from dotenv import load_dotenv
+from linkedin_api import Linkedin
 from mcp.server.fastmcp import FastMCP
 
 load_dotenv()
 
-SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
-PROXYCURL_KEY = os.getenv("PROXYCURL_KEY", "")
-SERPAPI_BASE = "https://serpapi.com/search"
-PROXYCURL_BASE = "https://nubela.co/proxycurl/api"
+LINKEDIN_EMAIL = os.getenv("LINKEDIN_EMAIL", "")
+LINKEDIN_PASSWORD = os.getenv("LINKEDIN_PASSWORD", "")
 
 mcp = FastMCP("LinkedIn Search")
 
+# Lazy singleton — created on first tool call so the server starts even if
+# credentials are missing (error surfaces at call time, not import time).
+_api: Linkedin | None = None
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
-def _require_serpapi() -> None:
-    if not SERPAPI_KEY:
+def _get_api() -> Linkedin:
+    global _api
+    if not LINKEDIN_EMAIL or not LINKEDIN_PASSWORD:
         raise ValueError(
-            "SERPAPI_KEY is not set. Add it to your .env file. "
-            "Get a key at https://serpapi.com/"
+            "LINKEDIN_EMAIL and LINKEDIN_PASSWORD must be set in your .env file."
         )
-
-
-def _require_proxycurl() -> None:
-    if not PROXYCURL_KEY:
-        raise ValueError(
-            "PROXYCURL_KEY is not set. Add it to your .env file. "
-            "Get a key at https://nubela.co/proxycurl/"
-        )
-
-
-def _format_organic_results(data: dict, max_results: int = 10) -> str:
-    """Extract and format organic Google search results."""
-    results = data.get("organic_results", [])[:max_results]
-    if not results:
-        return "No results found."
-
-    lines = []
-    for i, r in enumerate(results, 1):
-        title = r.get("title", "No title")
-        link = r.get("link", "")
-        snippet = r.get("snippet", "")
-        lines.append(f"{i}. {title}\n   {link}\n   {snippet}\n")
-
-    return "\n".join(lines)
+    if _api is None:
+        _api = Linkedin(LINKEDIN_EMAIL, LINKEDIN_PASSWORD)
+    return _api
 
 
 # ---------------------------------------------------------------------------
@@ -81,158 +57,61 @@ def _format_organic_results(data: dict, max_results: int = 10) -> str:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-async def search_linkedin_people(
+def search_linkedin_people(
     query: str,
-    location: str = "",
     current_company: str = "",
+    location: str = "",
+    title: str = "",
     school: str = "",
     limit: int = 10,
 ) -> str:
     """
-    Search for people / professionals on LinkedIn.
+    Search for people / professionals on LinkedIn using authenticated access.
 
     Args:
-        query: Name, job title, skill, or any keyword (e.g. "machine learning engineer").
-        location: City, region, or country to narrow results (e.g. "San Francisco").
+        query: Keywords — name, skill, or role (e.g. "machine learning engineer").
         current_company: Filter by current employer (e.g. "Google").
-        school: Filter by school/university attended (e.g. "MIT").
-        limit: Maximum number of results to return (1-20, default 10).
+        location: City or region (e.g. "San Francisco").
+        title: Filter by job title keyword (e.g. "VP Engineering").
+        school: Filter by school/university (e.g. "IIT Bombay").
+        limit: Max results to return (default 10).
 
     Returns:
-        Numbered list of LinkedIn profiles with name, URL, and snippet.
+        Formatted list of matching LinkedIn profiles.
     """
-    _require_serpapi()
+    api = _get_api()
 
-    limit = max(1, min(limit, 20))
-
-    # Build a targeted Google query restricted to LinkedIn profiles
-    parts = [f'site:linkedin.com/in/ {query}']
+    kwargs: dict = {"limit": limit}
     if current_company:
-        parts.append(f'"{current_company}"')
+        kwargs["keyword_company"] = current_company
+    if title:
+        kwargs["keyword_title"] = title
     if school:
-        parts.append(f'"{school}"')
-    if location:
-        parts.append(location)
+        kwargs["keyword_school"] = school
 
-    search_q = " ".join(parts)
+    results = api.search_people(keywords=query, **kwargs)
 
-    params = {
-        "engine": "google",
-        "q": search_q,
-        "num": limit,
-        "api_key": SERPAPI_KEY,
-    }
+    if not results:
+        return "No results found."
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(SERPAPI_BASE, params=params)
-        resp.raise_for_status()
-        data = resp.json()
+    lines = []
+    for i, p in enumerate(results[:limit], 1):
+        name = f"{p.get('firstName', '')} {p.get('lastName', '')}".strip()
+        headline = p.get("headline") or p.get("occupation", "")
+        location_str = p.get("subline", {})
+        if isinstance(location_str, dict):
+            location_str = location_str.get("text", "")
+        pub_id = p.get("public_id") or p.get("publicIdentifier", "")
+        profile_url = f"https://www.linkedin.com/in/{pub_id}/" if pub_id else ""
 
-    return _format_organic_results(data, limit)
+        lines.append(
+            f"{i}. {name}\n"
+            f"   {headline}\n"
+            f"   {location_str}\n"
+            f"   {profile_url}"
+        )
 
-
-# ---------------------------------------------------------------------------
-# Tool: search_linkedin_companies
-# ---------------------------------------------------------------------------
-
-@mcp.tool()
-async def search_linkedin_companies(
-    query: str,
-    industry: str = "",
-    location: str = "",
-    limit: int = 10,
-) -> str:
-    """
-    Search for companies on LinkedIn.
-
-    Args:
-        query: Company name or keyword (e.g. "electric vehicles startup").
-        industry: Industry vertical to narrow results (e.g. "fintech", "healthcare").
-        location: Headquarters location (e.g. "New York").
-        limit: Maximum number of results to return (1-20, default 10).
-
-    Returns:
-        Numbered list of LinkedIn company pages with name, URL, and snippet.
-    """
-    _require_serpapi()
-
-    limit = max(1, min(limit, 20))
-
-    parts = [f'site:linkedin.com/company/ {query}']
-    if industry:
-        parts.append(industry)
-    if location:
-        parts.append(location)
-
-    search_q = " ".join(parts)
-
-    params = {
-        "engine": "google",
-        "q": search_q,
-        "num": limit,
-        "api_key": SERPAPI_KEY,
-    }
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(SERPAPI_BASE, params=params)
-        resp.raise_for_status()
-        data = resp.json()
-
-    return _format_organic_results(data, limit)
-
-
-# ---------------------------------------------------------------------------
-# Tool: search_linkedin_jobs
-# ---------------------------------------------------------------------------
-
-@mcp.tool()
-async def search_linkedin_jobs(
-    query: str,
-    location: str = "",
-    date_posted: str = "month",
-    limit: int = 10,
-) -> str:
-    """
-    Search for job postings on LinkedIn.
-
-    Args:
-        query: Job title or skills (e.g. "senior backend engineer python").
-        location: City, region, or country (e.g. "Remote", "London").
-        date_posted: Recency filter — "day", "week", "month", or "any" (default "month").
-        limit: Maximum number of results to return (1-20, default 10).
-
-    Returns:
-        Numbered list of LinkedIn job postings with title, company, URL, and snippet.
-    """
-    _require_serpapi()
-
-    limit = max(1, min(limit, 20))
-
-    parts = [f'site:linkedin.com/jobs/ {query}']
-    if location:
-        parts.append(location)
-
-    search_q = " ".join(parts)
-
-    # Map date_posted to Google's tbs parameter
-    tbs_map = {"day": "qdr:d", "week": "qdr:w", "month": "qdr:m"}
-    tbs = tbs_map.get(date_posted, "")
-
-    params: dict = {
-        "engine": "google",
-        "q": search_q,
-        "num": limit,
-        "api_key": SERPAPI_KEY,
-    }
-    if tbs:
-        params["tbs"] = tbs
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(SERPAPI_BASE, params=params)
-        resp.raise_for_status()
-        data = resp.json()
-
-    return _format_organic_results(data, limit)
+    return "\n\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -240,85 +119,174 @@ async def search_linkedin_jobs(
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-async def get_linkedin_profile(linkedin_url: str) -> str:
+def get_linkedin_profile(linkedin_id: str) -> str:
     """
-    Fetch detailed information about a LinkedIn profile.
-
-    Requires PROXYCURL_KEY to be set in .env.
+    Fetch full details of a LinkedIn profile.
 
     Args:
-        linkedin_url: Full LinkedIn profile URL
-                      (e.g. "https://www.linkedin.com/in/satyanadella/").
+        linkedin_id: LinkedIn public ID from the profile URL
+                     (e.g. "satyanadella" from linkedin.com/in/satyanadella).
 
     Returns:
-        Structured profile data including name, headline, summary, experience,
-        education, and skills.
+        Full profile: name, headline, summary, experience, education, skills.
     """
-    _require_proxycurl()
+    api = _get_api()
+    p = api.get_profile(linkedin_id)
 
-    params = {
-        "url": linkedin_url,
-        "fallback_to_cache": "on-error",
-        "use_cache": "if-present",
-        "skills": "include",
-        "inferred_salary": "include",
-    }
-    headers = {"Authorization": f"Bearer {PROXYCURL_KEY}"}
+    if not p:
+        return f"No profile found for '{linkedin_id}'."
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(
-            f"{PROXYCURL_BASE}/v2/linkedin",
-            params=params,
-            headers=headers,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+    lines = []
 
-    # Format the profile into readable text
-    lines: list[str] = []
-
-    name = f"{data.get('first_name', '')} {data.get('last_name', '')}".strip()
+    name = f"{p.get('firstName', '')} {p.get('lastName', '')}".strip()
     if name:
         lines.append(f"Name: {name}")
-    if data.get("headline"):
-        lines.append(f"Headline: {data['headline']}")
-    if data.get("city") or data.get("country_full_name"):
-        location_parts = [data.get("city", ""), data.get("country_full_name", "")]
-        lines.append(f"Location: {', '.join(p for p in location_parts if p)}")
-    if data.get("summary"):
-        lines.append(f"\nSummary:\n{data['summary']}")
+    if p.get("headline"):
+        lines.append(f"Headline: {p['headline']}")
 
-    experiences = data.get("experiences", [])
+    loc = p.get("geoLocationName") or p.get("locationName", "")
+    if loc:
+        lines.append(f"Location: {loc}")
+
+    if p.get("summary"):
+        lines.append(f"\nSummary:\n{p['summary']}")
+
+    experiences = p.get("experience", [])
     if experiences:
         lines.append("\nExperience:")
-        for exp in experiences[:5]:
-            company = exp.get("company", "")
+        for exp in experiences[:6]:
+            company = exp.get("companyName", "")
             title = exp.get("title", "")
-            starts = exp.get("starts_at", {})
-            ends = exp.get("ends_at", {})
-            start_str = f"{starts.get('year', '')}" if starts else ""
-            end_str = f"{ends.get('year', '')}" if ends else "Present"
+            time_period = exp.get("timePeriod", {})
+            start = time_period.get("startDate", {})
+            end = time_period.get("endDate", {})
+            start_str = str(start.get("year", "")) if start else ""
+            end_str = str(end.get("year", "")) if end else "Present"
             lines.append(f"  - {title} at {company} ({start_str}–{end_str})")
 
-    educations = data.get("education", [])
+    educations = p.get("education", [])
     if educations:
         lines.append("\nEducation:")
         for edu in educations[:3]:
-            school = edu.get("school", "")
-            degree = edu.get("degree_name", "")
-            field = edu.get("field_of_study", "")
+            school = edu.get("schoolName", "")
+            degree = edu.get("degreeName", "")
+            field = edu.get("fieldOfStudy", "")
             lines.append(f"  - {school}: {degree} {field}".strip())
 
-    skills = data.get("skills", [])
+    skills = p.get("skills", [])
     if skills:
-        lines.append(f"\nSkills: {', '.join(skills[:15])}")
+        skill_names = [s.get("name", "") for s in skills[:15] if s.get("name")]
+        if skill_names:
+            lines.append(f"\nSkills: {', '.join(skill_names)}")
 
-    if data.get("public_identifier"):
+    lines.append(f"\nProfile URL: https://www.linkedin.com/in/{linkedin_id}/")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Tool: search_linkedin_jobs
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def search_linkedin_jobs(
+    query: str,
+    location: str = "",
+    date_posted_hours: int = 24 * 7,
+    limit: int = 10,
+) -> str:
+    """
+    Search for job postings on LinkedIn.
+
+    Args:
+        query: Job title or keywords (e.g. "senior python engineer").
+        location: City or region (e.g. "London", "Remote").
+        date_posted_hours: Only return jobs posted within this many hours
+                           (default 168 = 1 week). Use 86400 for last 24h.
+        limit: Max results to return (default 10).
+
+    Returns:
+        Formatted list of job postings with title, company, location and URL.
+    """
+    api = _get_api()
+
+    results = api.search_jobs(
+        keywords=query,
+        location_name=location if location else None,
+        listed_at=date_posted_hours * 3600,
+        limit=limit,
+    )
+
+    if not results:
+        return "No jobs found."
+
+    lines = []
+    for i, job in enumerate(results[:limit], 1):
+        entity = job.get("entityUrn", "")
+        job_id = entity.split(":")[-1] if entity else ""
+
+        title = job.get("title", "")
+        company = (job.get("companyDetails") or {})
+        company_name = ""
+        if isinstance(company, dict):
+            company_name = (
+                company.get("com.linkedin.voyager.jobs.JobPostingCompany", {})
+                .get("companyResolutionResult", {})
+                .get("name", "")
+            )
+
+        loc = job.get("formattedLocation", "")
+        job_url = f"https://www.linkedin.com/jobs/view/{job_id}/" if job_id else ""
+
         lines.append(
-            f"\nProfile URL: https://www.linkedin.com/in/{data['public_identifier']}/"
+            f"{i}. {title}\n"
+            f"   Company: {company_name}\n"
+            f"   Location: {loc}\n"
+            f"   {job_url}"
         )
 
-    return "\n".join(lines) if lines else json.dumps(data, indent=2)
+    return "\n\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Tool: search_linkedin_companies
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def search_linkedin_companies(query: str, limit: int = 10) -> str:
+    """
+    Search for companies on LinkedIn.
+
+    Args:
+        query: Company name or keyword (e.g. "fintech startup India").
+        limit: Max results to return (default 10).
+
+    Returns:
+        Formatted list of matching LinkedIn company pages.
+    """
+    api = _get_api()
+
+    results = api.search_companies(keywords=query, limit=limit)
+
+    if not results:
+        return "No companies found."
+
+    lines = []
+    for i, c in enumerate(results[:limit], 1):
+        name = c.get("name", "")
+        industry = c.get("industryName") or c.get("industry", "")
+        staff = c.get("staffCount", "")
+        pub_id = c.get("universalName") or c.get("public_id", "")
+        url = f"https://www.linkedin.com/company/{pub_id}/" if pub_id else ""
+
+        lines.append(
+            f"{i}. {name}\n"
+            f"   Industry: {industry}\n"
+            f"   Staff: {staff}\n"
+            f"   {url}"
+        )
+
+    return "\n\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
