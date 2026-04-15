@@ -5,9 +5,16 @@ Uses the linkedin-api package (unofficial LinkedIn internal API) to perform
 authenticated searches for people, companies, and jobs — with full behind-login
 data access.
 
-Requires LINKEDIN_EMAIL and LINKEDIN_PASSWORD in .env.
+Authentication — set ONE of these in your .env:
+  LINKEDIN_COOKIE   li_at cookie value from your browser (recommended)
+  LINKEDIN_EMAIL + LINKEDIN_PASSWORD   username/password (blocked on cloud IPs)
 
-Usage:
+NOTE: LinkedIn blocks requests from cloud/datacenter IPs. Run this server on
+your local machine where your home IP is not flagged.
+
+Setup (local machine):
+    pip install -r requirements.txt
+    cp .env.example .env   # fill in LINKEDIN_COOKIE
     python -m src.server
 
 Claude Desktop config (~/.claude/claude_desktop_config.json):
@@ -16,13 +23,12 @@ Claude Desktop config (~/.claude/claude_desktop_config.json):
         "linkedin-search": {
           "command": "python",
           "args": ["-m", "src.server"],
-          "cwd": "/path/to/this/repo"
+          "cwd": "/absolute/path/to/this/repo"
         }
       }
     }
 """
 
-import json
 import os
 
 from dotenv import load_dotenv
@@ -31,24 +37,36 @@ from mcp.server.fastmcp import FastMCP
 
 load_dotenv()
 
+LINKEDIN_COOKIE = os.getenv("LINKEDIN_COOKIE", "")
 LINKEDIN_EMAIL = os.getenv("LINKEDIN_EMAIL", "")
 LINKEDIN_PASSWORD = os.getenv("LINKEDIN_PASSWORD", "")
 
 mcp = FastMCP("LinkedIn Search")
 
-# Lazy singleton — created on first tool call so the server starts even if
-# credentials are missing (error surfaces at call time, not import time).
 _api: Linkedin | None = None
 
 
 def _get_api() -> Linkedin:
+    """Return a cached Linkedin API instance, authenticating on first call."""
     global _api
-    if not LINKEDIN_EMAIL or not LINKEDIN_PASSWORD:
-        raise ValueError(
-            "LINKEDIN_EMAIL and LINKEDIN_PASSWORD must be set in your .env file."
+    if _api is not None:
+        return _api
+
+    if LINKEDIN_COOKIE:
+        # Cookie-based auth — works from any IP, no password needed.
+        # li_at is the main LinkedIn session cookie.
+        _api = Linkedin(
+            "",
+            "",
+            cookies={"li_at": LINKEDIN_COOKIE},
         )
-    if _api is None:
+    elif LINKEDIN_EMAIL and LINKEDIN_PASSWORD:
+        # Username/password auth — only works from residential IPs.
         _api = Linkedin(LINKEDIN_EMAIL, LINKEDIN_PASSWORD)
+    else:
+        raise ValueError(
+            "Set LINKEDIN_COOKIE (preferred) or LINKEDIN_EMAIL + LINKEDIN_PASSWORD in .env"
+        )
     return _api
 
 
@@ -60,24 +78,22 @@ def _get_api() -> Linkedin:
 def search_linkedin_people(
     query: str,
     current_company: str = "",
-    location: str = "",
     title: str = "",
     school: str = "",
     limit: int = 10,
 ) -> str:
     """
-    Search for people / professionals on LinkedIn using authenticated access.
+    Search for people / professionals on LinkedIn.
 
     Args:
-        query: Keywords — name, skill, or role (e.g. "machine learning engineer").
+        query: Name, skill, or role keywords (e.g. "machine learning engineer").
         current_company: Filter by current employer (e.g. "Google").
-        location: City or region (e.g. "San Francisco").
         title: Filter by job title keyword (e.g. "VP Engineering").
         school: Filter by school/university (e.g. "IIT Bombay").
         limit: Max results to return (default 10).
 
     Returns:
-        Formatted list of matching LinkedIn profiles.
+        Numbered list of matching profiles with name, headline, and URL.
     """
     api = _get_api()
 
@@ -90,7 +106,6 @@ def search_linkedin_people(
         kwargs["keyword_school"] = school
 
     results = api.search_people(keywords=query, **kwargs)
-
     if not results:
         return "No results found."
 
@@ -98,18 +113,11 @@ def search_linkedin_people(
     for i, p in enumerate(results[:limit], 1):
         name = f"{p.get('firstName', '')} {p.get('lastName', '')}".strip()
         headline = p.get("headline") or p.get("occupation", "")
-        location_str = p.get("subline", {})
-        if isinstance(location_str, dict):
-            location_str = location_str.get("text", "")
+        subline = p.get("subline", {})
+        location_str = subline.get("text", "") if isinstance(subline, dict) else ""
         pub_id = p.get("public_id") or p.get("publicIdentifier", "")
-        profile_url = f"https://www.linkedin.com/in/{pub_id}/" if pub_id else ""
-
-        lines.append(
-            f"{i}. {name}\n"
-            f"   {headline}\n"
-            f"   {location_str}\n"
-            f"   {profile_url}"
-        )
+        url = f"https://www.linkedin.com/in/{pub_id}/" if pub_id else ""
+        lines.append(f"{i}. {name}\n   {headline}\n   {location_str}\n   {url}")
 
     return "\n\n".join(lines)
 
@@ -124,7 +132,7 @@ def get_linkedin_profile(linkedin_id: str) -> str:
     Fetch full details of a LinkedIn profile.
 
     Args:
-        linkedin_id: LinkedIn public ID from the profile URL
+        linkedin_id: The public ID from the profile URL
                      (e.g. "satyanadella" from linkedin.com/in/satyanadella).
 
     Returns:
@@ -132,55 +140,39 @@ def get_linkedin_profile(linkedin_id: str) -> str:
     """
     api = _get_api()
     p = api.get_profile(linkedin_id)
-
     if not p:
         return f"No profile found for '{linkedin_id}'."
 
     lines = []
-
     name = f"{p.get('firstName', '')} {p.get('lastName', '')}".strip()
     if name:
         lines.append(f"Name: {name}")
     if p.get("headline"):
         lines.append(f"Headline: {p['headline']}")
-
     loc = p.get("geoLocationName") or p.get("locationName", "")
     if loc:
         lines.append(f"Location: {loc}")
-
     if p.get("summary"):
         lines.append(f"\nSummary:\n{p['summary']}")
 
-    experiences = p.get("experience", [])
-    if experiences:
-        lines.append("\nExperience:")
-        for exp in experiences[:6]:
-            company = exp.get("companyName", "")
-            title = exp.get("title", "")
-            time_period = exp.get("timePeriod", {})
-            start = time_period.get("startDate", {})
-            end = time_period.get("endDate", {})
-            start_str = str(start.get("year", "")) if start else ""
-            end_str = str(end.get("year", "")) if end else "Present"
-            lines.append(f"  - {title} at {company} ({start_str}–{end_str})")
+    for exp in p.get("experience", [])[:6]:
+        if not lines or lines[-1] != "\nExperience:":
+            lines.append("\nExperience:")
+        tp = exp.get("timePeriod", {})
+        start = str(tp.get("startDate", {}).get("year", ""))
+        end = str(tp.get("endDate", {}).get("year", "")) if tp.get("endDate") else "Present"
+        lines.append(f"  - {exp.get('title','')} at {exp.get('companyName','')} ({start}–{end})")
 
-    educations = p.get("education", [])
-    if educations:
-        lines.append("\nEducation:")
-        for edu in educations[:3]:
-            school = edu.get("schoolName", "")
-            degree = edu.get("degreeName", "")
-            field = edu.get("fieldOfStudy", "")
-            lines.append(f"  - {school}: {degree} {field}".strip())
+    for edu in p.get("education", [])[:3]:
+        if not lines or lines[-1] != "\nEducation:":
+            lines.append("\nEducation:")
+        lines.append(f"  - {edu.get('schoolName','')}: {edu.get('degreeName','')} {edu.get('fieldOfStudy','')}".strip())
 
-    skills = p.get("skills", [])
+    skills = [s.get("name", "") for s in p.get("skills", [])[:15] if s.get("name")]
     if skills:
-        skill_names = [s.get("name", "") for s in skills[:15] if s.get("name")]
-        if skill_names:
-            lines.append(f"\nSkills: {', '.join(skill_names)}")
+        lines.append(f"\nSkills: {', '.join(skills)}")
 
     lines.append(f"\nProfile URL: https://www.linkedin.com/in/{linkedin_id}/")
-
     return "\n".join(lines)
 
 
@@ -201,49 +193,36 @@ def search_linkedin_jobs(
     Args:
         query: Job title or keywords (e.g. "senior python engineer").
         location: City or region (e.g. "London", "Remote").
-        date_posted_hours: Only return jobs posted within this many hours
-                           (default 168 = 1 week). Use 86400 for last 24h.
-        limit: Max results to return (default 10).
+        date_posted_hours: Jobs posted within this many hours (default 168 = 1 week).
+        limit: Max results (default 10).
 
     Returns:
-        Formatted list of job postings with title, company, location and URL.
+        Numbered list of job postings with title, company, location, and URL.
     """
     api = _get_api()
-
     results = api.search_jobs(
         keywords=query,
-        location_name=location if location else None,
+        location_name=location or None,
         listed_at=date_posted_hours * 3600,
         limit=limit,
     )
-
     if not results:
         return "No jobs found."
 
     lines = []
     for i, job in enumerate(results[:limit], 1):
-        entity = job.get("entityUrn", "")
-        job_id = entity.split(":")[-1] if entity else ""
-
+        job_id = (job.get("entityUrn") or "").split(":")[-1]
         title = job.get("title", "")
-        company = (job.get("companyDetails") or {})
-        company_name = ""
-        if isinstance(company, dict):
-            company_name = (
-                company.get("com.linkedin.voyager.jobs.JobPostingCompany", {})
-                .get("companyResolutionResult", {})
-                .get("name", "")
-            )
-
-        loc = job.get("formattedLocation", "")
-        job_url = f"https://www.linkedin.com/jobs/view/{job_id}/" if job_id else ""
-
-        lines.append(
-            f"{i}. {title}\n"
-            f"   Company: {company_name}\n"
-            f"   Location: {loc}\n"
-            f"   {job_url}"
+        company_block = job.get("companyDetails") or {}
+        company_name = (
+            company_block
+            .get("com.linkedin.voyager.jobs.JobPostingCompany", {})
+            .get("companyResolutionResult", {})
+            .get("name", "")
         )
+        loc = job.get("formattedLocation", "")
+        url = f"https://www.linkedin.com/jobs/view/{job_id}/" if job_id else ""
+        lines.append(f"{i}. {title}\n   Company: {company_name}\n   Location: {loc}\n   {url}")
 
     return "\n\n".join(lines)
 
@@ -259,15 +238,13 @@ def search_linkedin_companies(query: str, limit: int = 10) -> str:
 
     Args:
         query: Company name or keyword (e.g. "fintech startup India").
-        limit: Max results to return (default 10).
+        limit: Max results (default 10).
 
     Returns:
-        Formatted list of matching LinkedIn company pages.
+        Numbered list of company pages with name, industry, size, and URL.
     """
     api = _get_api()
-
     results = api.search_companies(keywords=query, limit=limit)
-
     if not results:
         return "No companies found."
 
@@ -278,13 +255,7 @@ def search_linkedin_companies(query: str, limit: int = 10) -> str:
         staff = c.get("staffCount", "")
         pub_id = c.get("universalName") or c.get("public_id", "")
         url = f"https://www.linkedin.com/company/{pub_id}/" if pub_id else ""
-
-        lines.append(
-            f"{i}. {name}\n"
-            f"   Industry: {industry}\n"
-            f"   Staff: {staff}\n"
-            f"   {url}"
-        )
+        lines.append(f"{i}. {name}\n   Industry: {industry}\n   Staff: {staff}\n   {url}")
 
     return "\n\n".join(lines)
 
