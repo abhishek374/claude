@@ -24,6 +24,19 @@ def step(msg):
     print(f"\n{'─'*60}\n  {msg}\n{'─'*60}")
 
 
+# ── Python version check ──────────────────────────────────────────────────────
+
+if sys.version_info >= (3, 14):
+    print(
+        "\n  WARNING: Python 3.14+ detected. Some dependencies (lxml) lack\n"
+        "  pre-built Windows binaries for this version.\n\n"
+        "  Recommended: install Python 3.12 and rerun with:\n"
+        "    winget install Python.Python.3.12\n"
+        "    Remove-Item -Recurse -Force .venv\n"
+        "    py -3.12 setup.py\n\n"
+        "  Attempting install anyway (may fail on lxml) …\n"
+    )
+
 # ── 1. virtual environment ────────────────────────────────────────────────────
 
 step("1 / 4  Creating virtual environment")
@@ -45,7 +58,7 @@ else:
 # ── 2. install dependencies ───────────────────────────────────────────────────
 
 step("2 / 4  Installing dependencies")
-run([venv_pip, "install", "-q", "-r", "requirements.txt"])
+run([venv_pip, "install", "-q", "--prefer-binary", "-r", "requirements.txt"])
 print("  Dependencies installed.")
 
 # ── 3. create .env ────────────────────────────────────────────────────────────
