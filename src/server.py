@@ -47,8 +47,8 @@ mcp = FastMCP("LinkedIn Search")
 _api: Linkedin | None = None
 
 
-def _fetch_jsessionid(li_at: str) -> str:
-    """Hit LinkedIn with li_at to retrieve a JSESSIONID (CSRF token)."""
+def _build_cookie_jar(li_at: str):
+    """Return a RequestsCookieJar with li_at + JSESSIONID fetched from LinkedIn."""
     session = _requests.Session()
     session.headers.update({
         "User-Agent": (
@@ -59,7 +59,9 @@ def _fetch_jsessionid(li_at: str) -> str:
     })
     session.cookies.set("li_at", li_at, domain=".linkedin.com")
     session.get("https://www.linkedin.com/feed/", allow_redirects=True)
-    return session.cookies.get("JSESSIONID", "")
+    # Return the full RequestsCookieJar — linkedin-api sets session.cookies = cookies
+    # directly (not .update()), so it must be a CookieJar, not a plain dict.
+    return session.cookies
 
 
 def _get_api() -> Linkedin:
@@ -69,11 +71,8 @@ def _get_api() -> Linkedin:
         return _api
 
     if LINKEDIN_COOKIE:
-        jsessionid = _fetch_jsessionid(LINKEDIN_COOKIE)
-        cookies: dict = {"li_at": LINKEDIN_COOKIE}
-        if jsessionid:
-            cookies["JSESSIONID"] = jsessionid
-        _api = Linkedin("", "", cookies=cookies)
+        jar = _build_cookie_jar(LINKEDIN_COOKIE)
+        _api = Linkedin("", "", cookies=jar)
     elif LINKEDIN_EMAIL and LINKEDIN_PASSWORD:
         _api = Linkedin(LINKEDIN_EMAIL, LINKEDIN_PASSWORD)
     else:

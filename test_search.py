@@ -48,7 +48,9 @@ def main():
         import requests
         from linkedin_api import Linkedin
 
-        # Fetch JSESSIONID (CSRF token) using the li_at cookie
+        # Build a proper RequestsCookieJar with li_at + JSESSIONID.
+        # linkedin-api does session.cookies = cookies (not .update()), so it
+        # must be a CookieJar — a plain dict causes AttributeError downstream.
         s = requests.Session()
         s.headers["User-Agent"] = (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -58,13 +60,10 @@ def main():
         s.cookies.set("li_at", cookie, domain=".linkedin.com")
         s.get("https://www.linkedin.com/feed/", allow_redirects=True)
         jsessionid = s.cookies.get("JSESSIONID", "")
-
-        cookies: dict = {"li_at": cookie}
         if jsessionid:
-            cookies["JSESSIONID"] = jsessionid
             print(f"  JSESSIONID obtained: {jsessionid[:20]}…")
 
-        api = Linkedin("", "", cookies=cookies)
+        api = Linkedin("", "", cookies=s.cookies)
         print("Connected.\n")
     except Exception as e:
         print(f"Login failed: {e}")
