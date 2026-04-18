@@ -31,6 +31,7 @@ Claude Desktop config (~/.claude/claude_desktop_config.json):
 
 import os
 
+import requests as _requests
 from dotenv import load_dotenv
 from linkedin_api import Linkedin
 from mcp.server.fastmcp import FastMCP
@@ -46,6 +47,21 @@ mcp = FastMCP("LinkedIn Search")
 _api: Linkedin | None = None
 
 
+def _fetch_jsessionid(li_at: str) -> str:
+    """Hit LinkedIn with li_at to retrieve a JSESSIONID (CSRF token)."""
+    session = _requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
+    })
+    session.cookies.set("li_at", li_at, domain=".linkedin.com")
+    session.get("https://www.linkedin.com/feed/", allow_redirects=True)
+    return session.cookies.get("JSESSIONID", "")
+
+
 def _get_api() -> Linkedin:
     """Return a cached Linkedin API instance, authenticating on first call."""
     global _api
@@ -53,15 +69,12 @@ def _get_api() -> Linkedin:
         return _api
 
     if LINKEDIN_COOKIE:
-        # Cookie-based auth — works from any IP, no password needed.
-        # li_at is the main LinkedIn session cookie.
-        _api = Linkedin(
-            "",
-            "",
-            cookies={"li_at": LINKEDIN_COOKIE},
-        )
+        jsessionid = _fetch_jsessionid(LINKEDIN_COOKIE)
+        cookies: dict = {"li_at": LINKEDIN_COOKIE}
+        if jsessionid:
+            cookies["JSESSIONID"] = jsessionid
+        _api = Linkedin("", "", cookies=cookies)
     elif LINKEDIN_EMAIL and LINKEDIN_PASSWORD:
-        # Username/password auth — only works from residential IPs.
         _api = Linkedin(LINKEDIN_EMAIL, LINKEDIN_PASSWORD)
     else:
         raise ValueError(

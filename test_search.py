@@ -45,8 +45,26 @@ def main():
 
     print(f"Connecting to LinkedIn …  (cookie: {cookie[:20]}…)")
     try:
+        import requests
         from linkedin_api import Linkedin
-        api = Linkedin("", "", cookies={"li_at": cookie})
+
+        # Fetch JSESSIONID (CSRF token) using the li_at cookie
+        s = requests.Session()
+        s.headers["User-Agent"] = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
+        s.cookies.set("li_at", cookie, domain=".linkedin.com")
+        s.get("https://www.linkedin.com/feed/", allow_redirects=True)
+        jsessionid = s.cookies.get("JSESSIONID", "")
+
+        cookies: dict = {"li_at": cookie}
+        if jsessionid:
+            cookies["JSESSIONID"] = jsessionid
+            print(f"  JSESSIONID obtained: {jsessionid[:20]}…")
+
+        api = Linkedin("", "", cookies=cookies)
         print("Connected.\n")
     except Exception as e:
         print(f"Login failed: {e}")
