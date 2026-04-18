@@ -1,72 +1,97 @@
 # LinkedIn Search MCP Server
 
-An MCP (Model Context Protocol) server that lets Claude search LinkedIn for
-people, companies, and job postings — and fetch rich profile data.
+Connects Claude Desktop to LinkedIn so you can search for people, companies,
+and jobs — with full behind-login access — directly from Claude.
 
-## Features
+> **Important:** LinkedIn blocks requests from cloud/datacenter IPs.
+> Run this server on your **local machine** (laptop/desktop).
 
-| Tool | Description |
+---
+
+## Quick Setup (3 steps)
+
+### 1. Clone & run the setup script
+
+```bash
+git clone https://github.com/abhishek374/claude.git
+cd claude
+python setup.py
+```
+
+The script will:
+- Create a virtual environment (`.venv/`)
+- Install all dependencies
+- Ask for your `li_at` cookie and save it to `.env`
+- Auto-write the MCP server entry into your Claude Desktop config
+
+### 2. Get your `li_at` cookie
+
+1. Open **Chrome** and log into [linkedin.com](https://www.linkedin.com)
+2. Press **F12** → **Application** tab → **Cookies** → `https://www.linkedin.com`
+3. Find the cookie named **`li_at`** and copy its **Value**
+4. Paste it when `setup.py` asks
+
+### 3. Test & restart Claude Desktop
+
+```bash
+# Verify LinkedIn access works
+python test_search.py
+
+# Custom searches
+python test_search.py "data scientist" --company Google
+python test_search.py "product manager" --title "VP"
+python test_search.py "python developer" --jobs
+```
+
+Then **quit and reopen Claude Desktop**. The `linkedin-search` server loads automatically.
+
+---
+
+## Using it in Claude
+
+Once connected, just ask Claude naturally:
+
+| Ask Claude | Tool used |
 |---|---|
-| `search_linkedin_people` | Search professionals by name, title, company, school, or location |
-| `search_linkedin_companies` | Search companies by name, industry, or location |
-| `search_linkedin_jobs` | Search job postings by title, skills, location, and recency |
-| `get_linkedin_profile` | Fetch detailed profile data for a given LinkedIn URL |
+| "Search LinkedIn for ML engineers at Anthropic in London" | `search_linkedin_people` |
+| "Find fintech startups headquartered in Singapore" | `search_linkedin_companies` |
+| "Search for senior PM jobs posted this week" | `search_linkedin_jobs` |
+| "Get the LinkedIn profile for satyanadella" | `get_linkedin_profile` |
 
-## Requirements
+---
 
-- Python 3.10+
-- [SerpAPI](https://serpapi.com/) key (for people/company/job search — free tier available)
-- [Proxycurl](https://nubela.co/proxycurl/) key *(optional — only for `get_linkedin_profile`)*
+## Tools
 
-## Setup
+| Tool | Parameters |
+|---|---|
+| `search_linkedin_people` | `query`, `current_company`, `title`, `school`, `limit` |
+| `search_linkedin_companies` | `query`, `limit` |
+| `search_linkedin_jobs` | `query`, `location`, `date_posted_hours`, `limit` |
+| `get_linkedin_profile` | `linkedin_id` (e.g. `"satyanadella"`) |
 
-### 1. Install dependencies
+---
 
-```bash
-pip install -r requirements.txt
-```
+## Manual Claude Desktop config
 
-### 2. Configure API keys
+If you prefer to configure manually instead of running `setup.py`, add this
+to your Claude Desktop config file:
 
-```bash
-cp .env.example .env
-# Edit .env and set SERPAPI_KEY (and optionally PROXYCURL_KEY)
-```
-
-### 3. Connect to Claude
-
-Add the server to your Claude Desktop config
-(`~/.claude/claude_desktop_config.json` on macOS/Linux,
-`%APPDATA%\Claude\claude_desktop_config.json` on Windows):
+**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "linkedin-search": {
-      "command": "python",
+      "command": "/absolute/path/to/claude/.venv/bin/python",
       "args": ["-m", "src.server"],
-      "cwd": "/absolute/path/to/this/repo"
+      "cwd": "/absolute/path/to/claude"
     }
   }
 }
 ```
 
-Restart Claude Desktop. The LinkedIn search tools will appear automatically.
-
-### 4. Use from Claude Code CLI
-
-```bash
-claude --mcp-config '{"mcpServers":{"linkedin-search":{"command":"python","args":["-m","src.server"],"cwd":"."}}}'
-```
-
-## Example Prompts
-
-Once connected, you can ask Claude things like:
-
-- *"Search LinkedIn for machine learning engineers in London at DeepMind"*
-- *"Find fintech companies headquartered in Singapore on LinkedIn"*
-- *"Search for senior product manager jobs posted this week in New York"*
-- *"Get the LinkedIn profile details for https://www.linkedin.com/in/satyanadella/"*
+---
 
 ## Project Structure
 
@@ -74,23 +99,18 @@ Once connected, you can ask Claude things like:
 .
 ├── src/
 │   ├── __init__.py
-│   └── server.py        # MCP server with all 4 tools
-├── .env.example         # Template for API keys
-├── .gitignore
+│   └── server.py       ← MCP server (4 LinkedIn search tools)
+├── setup.py            ← one-command local setup
+├── test_search.py      ← quick CLI test
+├── .env.example        ← template for LINKEDIN_COOKIE
 ├── requirements.txt
 └── readme.md
 ```
 
-## How It Works
+---
 
-- **People / company / job search** — sends a `site:linkedin.com/...` Google
-  search via SerpAPI and returns the organic results.
-- **Profile lookup** — calls the Proxycurl API with the LinkedIn URL and
-  returns a structured summary (name, headline, experience, education, skills).
+## Cookie security note
 
-## API Key Notes
-
-| Service | Free Tier | Docs |
-|---|---|---|
-| SerpAPI | 100 searches/month | https://serpapi.com/manage-api-key |
-| Proxycurl | 10 credits free | https://nubela.co/proxycurl/dashboard |
+The `li_at` cookie is your LinkedIn session token — treat it like a password.
+It is stored only in your local `.env` file (which is gitignored).
+Refresh it by repeating step 2 if it expires (usually after ~1 year).
