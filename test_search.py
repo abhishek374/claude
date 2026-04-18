@@ -95,6 +95,12 @@ def main():
         if not results:
             print("No results found.")
             return
+
+        # Print raw first result to inspect actual field names
+        print("Raw first result keys:", list(results[0].keys()))
+        print("Raw first result:", results[0])
+        print()
+
         for i, p in enumerate(results, 1):
             name = f"{p.get('firstName','')} {p.get('lastName','')}".strip()
             headline = p.get("headline") or p.get("occupation", "")
