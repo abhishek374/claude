@@ -123,13 +123,12 @@ def search_linkedin_people(
 
     lines = []
     for i, p in enumerate(results[:limit], 1):
-        name = f"{p.get('firstName', '')} {p.get('lastName', '')}".strip()
-        headline = p.get("headline") or p.get("occupation", "")
-        subline = p.get("subline", {})
-        location_str = subline.get("text", "") if isinstance(subline, dict) else ""
-        pub_id = p.get("public_id") or p.get("publicIdentifier", "")
-        url = f"https://www.linkedin.com/in/{pub_id}/" if pub_id else ""
-        lines.append(f"{i}. {name}\n   {headline}\n   {location_str}\n   {url}")
+        name = p.get("name", "")
+        jobtitle = p.get("jobtitle", "")
+        location = p.get("location", "")
+        urn_id = p.get("urn_id", "")
+        distance = p.get("distance", "").replace("DISTANCE_", "") + "nd degree" if p.get("distance") else ""
+        lines.append(f"{i}. {name}\n   {jobtitle}\n   {location}  ·  {distance}\n   urn:{urn_id}")
 
     return "\n\n".join(lines)
 

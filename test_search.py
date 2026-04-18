@@ -96,17 +96,12 @@ def main():
             print("No results found.")
             return
 
-        # Print raw first result to inspect actual field names
-        print("Raw first result keys:", list(results[0].keys()))
-        print("Raw first result:", results[0])
-        print()
-
         for i, p in enumerate(results, 1):
-            name = f"{p.get('firstName','')} {p.get('lastName','')}".strip()
-            headline = p.get("headline") or p.get("occupation", "")
-            pub_id = p.get("public_id") or p.get("publicIdentifier", "")
-            url = f"https://www.linkedin.com/in/{pub_id}/" if pub_id else ""
-            print(f"{i}. {name}\n   {headline}\n   {url}\n")
+            name     = p.get("name", "")
+            jobtitle = p.get("jobtitle", "")
+            location = p.get("location", "")
+            distance = p.get("distance", "").replace("DISTANCE_", "") + "nd degree" if p.get("distance") else ""
+            print(f"{i}. {name}\n   {jobtitle}\n   {location}  ·  {distance}\n")
 
 
 if __name__ == "__main__":
